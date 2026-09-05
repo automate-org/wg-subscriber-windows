@@ -1,0 +1,211 @@
+# wg-subscriber-windows
+
+**Windows 专用 WireGuard 客户端订阅器** – 通过 MQTT 协议自动接收服务端配置，动态管理本地 WireGuard 接口（使用 Windows WireGuard 服务），支持 LAN 切换、端口更换、中继、流量上报等功能。
+
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org/)
+
+---
+
+## 特点
+
+- 🔌 MQTT 订阅 – 订阅 full/delta 主题，实时同步服务端 Peer 配置
+- 🧠 智能端点切换 – 支持自动切换至同网段 LAN 端点（ENABLE_LAN_SWITCHING）
+- 🔁 端口更换 – 网络故障时自动更换监听端口（可选）
+- 🧩 中继支持 – 当直连 Peer 失效时，自动通过中继节点转发（需服务端配合）
+- 📊 流量上报 – 定期向 MQTT 上报本节点流量统计（ENABLE_TRAFFIC_REPORT）
+- 🛡️ AmneziaWG 支持 – 支持协议混淆（需设置 WG_USE_AWG=1 并配置，使用 `awg.exe`）
+- 🪟 **Windows 原生** – 通过 WireGuard 服务驱动，使用 `netsh` 和 `route` 进行网络配置
+- ⚡ 纯客户端 – 无状态，依赖本地 WireGuard 服务和外部 MQTT Broker
+
+---
+
+## 架构概览
+
+    ┌─────────────────────────────────────────────────┐
+    │            wg-subscriber-windows                │
+    ├─────────────────────────────────────────────────┤
+    │  MQTT 订阅  →  解析配置  →  本地 WireGuard 服务 │
+    │  (full/delta)   (路由/Peer)   (wg.exe 驱动)    │
+    └─────────────────────────────────────────────────┘
+            │                        │
+            ▼                        ▼
+   外部 MQTT Broker            WireGuard 内核驱动
+    (由服务端提供)             (Windows 服务)
+
+- 通过 MQTT 接收服务端发布的全量快照和增量更新。
+- 应用路由（使用 `route` 命令）、添加/更新/删除 Peer（通过 WireGuard 服务）。
+- 可选功能：LAN 切换、端口更换、中继、流量上报。
+
+---
+
+## 快速开始
+
+### 前置条件
+
+- Windows 10/11（x64）
+- 已安装 [WireGuard for Windows](https://www.wireguard.com/install/)
+- **可访问的 MQTT Broker**（由服务端或网络管理员提供，客户端无需自行安装）
+
+### 1. 获取二进制
+```bash
+# cargo 安装
+catgo install wg-subscriber-windows
+
+# 编译（需要 Rust 工具链）
+git clone [https://github.com/automate-org/wg-subscriber-windows](https://github.com/automate-org/wg-subscriber-windows)
+cd wg-subscriber-windows
+cargo build --release
+
+# 或者下载预编译版本（若有）
+```
+
+### 2. 配置环境变量
+```bash
+set MQTT_HOST=<broker-ip-or-domain>
+set MQTT_PORT=1883
+set WG_INTERFACE=wg0
+# 可选功能开关
+set ENABLE_LAN_SWITCHING=1
+set ENABLE_PORT_CHANGE_ON_NETWORK_LOSS=1
+set ENABLE_TRAFFIC_REPORT=1
+```
+
+### 3. 启动服务
+```bash
+.\target\release\wg-subscriber-windows.exe
+```
+
+首次运行会自动生成密钥对，保存到 `%PROGRAMDATA%\wg-subscriber\private.key`，并通过 WireGuard 服务安装隧道。
+
+---
+
+## 配置参考
+
+| 变量名 | 必填 | 默认值 | 说明 |
+|--------|------|--------|------|
+| MQTT_HOST | ✅ | - | MQTT Broker 地址 |
+| MQTT_PORT | - | 1883 | MQTT 端口 |
+| MQTT_USER | - | - | 用户名 |
+| MQTT_PASS | - | - | 密码 |
+| MQTT_TLS_ENABLE | - | false | 启用 TLS |
+| MQTT_TLS_CA_CERT | - | 系统 CA | CA 证书路径 |
+| WG_INTERFACE | - | wg0 | 接口名称 |
+| WG_LISTEN_PORT | - | 52822 | 监听端口 |
+| ENABLE_LAN_SWITCHING | - | false | 启用 LAN 端点自动切换 |
+| ENABLE_PORT_CHANGE_ON_NETWORK_LOSS | - | false | 网络失联时自动更换监听端口 |
+| ENABLE_SCHEDULED_PORT_CHANGE | - | false | 定时更换端口（防止 NAT 老化） |
+| SCHEDULED_PORT_CHANGE_INTERVAL | - | 7200 | 定时更换间隔（秒） |
+| ENABLE_TRAFFIC_REPORT | - | false | 启用流量上报（MQTT） |
+| RE_REGISTER_INTERVAL | - | 600 | 定期重注册间隔（秒） |
+| WG_PORT_MIN / WG_PORT_MAX | - | 1024 / 65535 | 端口更换范围 |
+| RELAY_CIDR_V4 / RELAY_CIDR_V6 | - | 10.254.1.0/24 / fd00:1:1::/64 | 中继网段 |
+| LAN_HANDSHAKE_WAIT_SECS | - | 8 | 切换 LAN 后等待握手超时（秒）（硬编码 15s） |
+| WG_USE_AWG | - | false | 使用 `awg.exe` 命令（启用 AmneziaWG） |
+
+> **注意**：Windows 版不支持内核 / 用户态切换，仅使用 WireGuard 驱动服务。
+
+---
+
+## MQTT 主题
+
+客户端订阅以下主题（服务端发布）：
+
+| 主题 | 说明 |
+|------|------|
+| wg/<interface>/full | 全量快照（Zstd 压缩 JSON） |
+| wg/<interface>/delta | 增量更新（add/update/remove/set_routes） |
+| wg/<interface>/full/response/<client_id> | 服务端回复的单播快照（用于注册后即时同步） |
+
+客户端发布：
+
+| 主题 | 说明 |
+|------|------|
+| wg/<interface>/register | 注册请求（包含公钥、hostname、本地 LAN IP 列表） |
+| wg/<interface>/full/request/<client_id> | 请求全量快照 |
+| wg/<interface>/traffic | 流量上报（若启用） |
+
+---
+
+## 高级功能
+
+### LAN 端点切换
+
+当设置 ENABLE_LAN_SWITCHING=1 时，客户端会尝试将 Peer 的端点切换为同网段的内网 IP，以获得更低延迟和更高吞吐量。切换后会在一定时间内验证握手，若失败则自动回退。
+
+### 端口更换
+
+- 网络失联触发：ENABLE_PORT_CHANGE_ON_NETWORK_LOSS=1 时，若所有 Peer 无握手且无 LAN 活动，则更换监听端口。
+- 定时触发：ENABLE_SCHEDULED_PORT_CHANGE=1 时，每隔 SCHEDULED_PORT_CHANGE_INTERVAL 秒更换一次端口，以绕过 NAT 端口限制。
+
+### 中继
+
+当服务端配置了中继网段（RELAY_CIDR_V4/V6）时，客户端会动态发现中继节点。若直连 Peer 持续无握手，客户端会将该 Peer 的 IP 挂载到某个健康中继节点下，实现流量转发。
+
+### 流量上报
+
+启用 ENABLE_TRAFFIC_REPORT=1 后，客户端每隔 30 秒向 wg/<interface>/traffic 发布本机所有 Peer 的收发增量及总量，便于服务端监控。
+
+---
+
+## AmneziaWG 支持
+
+设置 WG_USE_AWG=1 并使用 `awg.exe`（需自行安装 AmneziaWG for Windows）时，客户端会从全量快照中读取 amnezia 字段并应用到本地接口。
+
+---
+
+## 持久化
+
+- 私钥保存在 `%PROGRAMDATA%\wg-subscriber\private.key`。
+- 自身 IP 地址缓存保存在 `%PROGRAMDATA%\wg-subscriber\self_ips.json`，用于重启后恢复。
+- 所有配置均从 MQTT 快照动态获取，客户端本身无状态。
+
+---
+
+## Windows 特殊说明
+
+- 本版本专为 Windows 设计，**使用 WireGuard 驱动服务**（需安装 WireGuard for Windows）。
+- 网络配置使用 `netsh` 和 `route` 命令（与 Linux/macOS 不同）。
+- WireGuard 隧道服务由客户端自动安装/管理（通过 `wireguard /installtunnelservice`）。
+- 私钥生成使用 `x25519-dalek` 库（纯 Rust 实现），无需依赖 `wg.exe genkey`。
+
+---
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request。开发前请确保：
+
+- Rust 1.85+
+- 遵循现有代码风格
+- 添加必要的测试
+```bash
+cargo fmt
+cargo clippy -- -D warnings
+cargo test
+```
+---
+
+## 许可证
+
+[MIT License](LICENSE)
+
+---
+
+## 常见问题
+
+**Q: 注册后长时间未收到配置？**  
+A: 检查 MQTT 连接和服务端是否正常工作，客户端会自动重试注册。
+
+**Q: LAN 切换后无法通信？**  
+A: 确保同网段路由可达，且防火墙允许 UDP 端口。客户端会在超时后回退。
+
+**Q: 如何更换私钥？**  
+A: 删除 `%PROGRAMDATA%\wg-subscriber\private.key` 后重启，客户端会重新生成并自动注册。
+
+**Q: 需要管理员权限吗？**  
+A: 是的，安装 WireGuard 服务和配置网络路由需要管理员权限。建议以管理员身份运行。
+
+**Q: 支持 AmneziaWG 吗？**  
+A: 支持，需设置 WG_USE_AWG=1 并确保 `awg.exe` 在 PATH 中，同时配置 Amnezia 参数。
+
+---
