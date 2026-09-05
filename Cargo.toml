@@ -2,6 +2,8 @@
 name = "wg-subscriber-windows"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/automate-org/wg-subscriber-windows"
 description = "Windows WireGuard subscriber client using MQTT for dynamic configuration."
 keywords = ["wireguard", "vpn", "mqtt", "windows", "client"]
 categories = ["network-programming", "command-line-utilities"]
@@ -34,3 +36,8 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
